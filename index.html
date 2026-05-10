@@ -838,8 +838,8 @@
           <p class="subtitle">Cada clase juega en su propia sala, con su propio código.</p>
 
           <div class="notice">
-            👩‍🏫 <strong>Profesor:</strong> inicia sesión con Google y crea una sala nueva.<br>
-            👦 <strong>Alumnos:</strong> escriben el código de la sala y luego su nombre.
+            👩‍🏫 <strong>Profesor:</strong> inicia sesión con Google y pulsa <strong>Crear sala nueva</strong>. La app generará un código automáticamente.<br>
+            👦 <strong>Alumnos:</strong> escriben el código exacto de la sala y luego su nombre.
           </div>
 
           <div class="form-grid">
@@ -860,6 +860,7 @@
         <div id="screenJoin" class="screen">
           <h1>¡Entra al trivial!</h1>
           <p class="subtitle">Escribe tu nombre para unirte a la partida de clase.</p>
+          <div class="room-code-badge hidden" id="joinRoomCodeBadge">----</div>
 
           <div class="form-grid">
             <div>
@@ -990,7 +991,7 @@
     /************************************************************
      * CONFIGURACIÓN BÁSICA
      ************************************************************/
-    let roomCode = localStorage.getItem("trivial_room_code") || getRoomCodeFromUrl() || "";
+    let roomCode = getRoomCodeFromUrl() || "";
     const FUNCTIONS_REGION = "europe-west1";
     const QUESTION_SECONDS = 20;
     const FINISHED_CLEANUP_DELAY_MS = 30000;
@@ -1140,7 +1141,6 @@
       roomCode = normalizeRoomCode(code);
       roomRef = doc(db, "trivialRooms", roomCode);
       playersRef = collection(db, "trivialRooms", roomCode, "players");
-      localStorage.setItem("trivial_room_code", roomCode);
       updateUrlRoomCode(roomCode);
       updateSideRoomCode();
     }
@@ -1157,8 +1157,8 @@
 
       if (checkExists && !snap.exists()) {
         if (!silentIfMissing) showNotice("roomNotice", "Esa sala no existe todavía. Revisa el código o pide al profesor que cree una sala.");
-        localStorage.removeItem("trivial_room_code");
         roomCode = "";
+        updateUrlRoomCode("");
         updateSideRoomCode();
         showScreen("room");
         return false;
@@ -1194,6 +1194,7 @@
         return;
       }
 
+      hideNotice("roomNotice");
       const code = await generateUniqueRoomCode();
       setupRoomRefs(code);
       await resetRoomDocument({ hostEmail: currentUser?.email || "", hostUid: currentUser?.uid || "" });
@@ -1226,7 +1227,6 @@
       room = null;
       players = [];
       myPlayer = null;
-      localStorage.removeItem("trivial_room_code");
       localStorage.removeItem("trivial_player_id");
       playerId = null;
       updateUrlRoomCode("");
@@ -2192,6 +2192,13 @@
       const el = $(id);
       el.textContent = text;
       el.classList.remove("hidden");
+    }
+
+    function hideNotice(id) {
+      const el = $(id);
+      if (!el) return;
+      el.textContent = "";
+      el.classList.add("hidden");
     }
 
     function normalizeRoomCode(code) {
