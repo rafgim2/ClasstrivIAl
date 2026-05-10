@@ -595,6 +595,7 @@
           <h1>¡Partida terminada!</h1>
           <p class="subtitle">Clasificación final</p>
           <div class="big-score" id="winnerName">🏆</div>
+          <div class="notice">La sala se limpiará automáticamente en unos segundos para poder empezar una nueva partida.</div>
           <button class="btn danger hidden" id="resetGameBtn">Crear nueva partida 🔄</button>
         </div>
       </section>
@@ -674,6 +675,12 @@
     let timerInterval = null;
     let unsubscribeRoom = null;
     let unsubscribePlayers = null;
+    let cleanupScheduled = false;
+
+    // Música de fondo: solo sonará en el dispositivo que crea/controla la partida.
+    const hostMusic = new Audio("music.mp3");
+    hostMusic.loop = true;
+    hostMusic.volume = 0.28;
 
     const $ = (id) => document.getElementById(id);
 
@@ -822,6 +829,10 @@
         return;
       }
 
+      // Al pulsar el botón, el navegador permite iniciar audio.
+      // Solo lo hace el host/creador de la partida.
+      startHostMusic();
+
       try {
         await updateDoc(roomRef, {
           status: "loading",
@@ -851,6 +862,7 @@
         });
       } catch (error) {
         console.error(error);
+        stopHostMusic();
         alert("No se han podido generar las preguntas. Revisa que la Firebase Function generateQuestions esté desplegada y que la región coincida.");
         await updateDoc(roomRef, {
           status: "waiting",
@@ -927,6 +939,8 @@
       const seconds = getElapsedSeconds();
       const points = correct ? calculatePoints(seconds) : 0;
 
+      playAnswerSound(correct);
+
       await updateDoc(doc(playersRef, playerId), {
         [`answers.${answerKey}`]: {
           selectedIndex,
@@ -947,8 +961,10 @@
       const total = room.questions?.length || 0;
 
       if (next >= total) {
+        stopHostMusic();
         await updateDoc(roomRef, {
           status: "finished",
+          finishedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
       } else {
@@ -962,6 +978,9 @@
 
     async function resetGame() {
       if (!isHost) return;
+
+      stopHostMusic();
+      cleanupScheduled = false;
 
       const deletes = players.map(p => deleteDoc(doc(playersRef, p.id)));
       await Promise.all(deletes);
@@ -1004,25 +1023,31 @@
       }
 
       if (room.status === "waiting") {
+        stopHostMusic();
+        cleanupScheduled = false;
         showScreen("waiting");
         $("waitingText").textContent = `Tema: ${room.topic || "sin tema"}`;
         $("startGameBtn").classList.toggle("hidden", !isHost);
       }
 
       if (room.status === "loading") {
+        if (isHost) startHostMusic();
         showScreen("loading");
       }
 
       if (room.status === "playing") {
+        if (isHost) startHostMusic();
         showScreen("game");
         renderGame();
       }
 
       if (room.status === "finished") {
+        stopHostMusic();
         showScreen("finished");
         const winner = players[0];
         $("winnerName").textContent = winner ? `🏆 ${winner.name}` : "🏆";
         $("resetGameBtn").classList.toggle("hidden", !isHost);
+        scheduleAutoCleanupAfterFinished();
       }
     }
 
@@ -1082,6 +1107,103 @@
         `;
         box.appendChild(div);
       });
+    }
+
+    /************************************************************
+     * AUDIO
+     ************************************************************/
+    function startHostMusic() {
+      if (!isHost) return;
+
+      hostMusic.play().catch(() => {
+        // Algunos navegadores bloquean audio hasta que haya una interacción.
+        // No mostramos error para no interrumpir la partida.
+      });
+    }
+
+    function stopHostMusic() {
+      hostMusic.pause();
+      hostMusic.currentTime = 0;
+    }
+
+    function playAnswerSound(correct) {
+      try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioContext();
+
+        const master = ctx.createGain();
+        master.gain.value = 0.18;
+        master.connect(ctx.destination);
+
+        if (correct) {
+          playTone(ctx, master, 523.25, 0.00, 0.10);
+          playTone(ctx, master, 659.25, 0.10, 0.10);
+          playTone(ctx, master, 783.99, 0.20, 0.18);
+        } else {
+          playTone(ctx, master, 196.00, 0.00, 0.14);
+          playTone(ctx, master, 146.83, 0.14, 0.22);
+        }
+
+        setTimeout(() => ctx.close(), 900);
+      } catch (error) {
+        // Si el navegador no permite Web Audio, simplemente no suena.
+      }
+    }
+
+    function playTone(ctx, master, frequency, delay, duration) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.value = frequency;
+
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(1, ctx.currentTime + delay + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + duration);
+
+      osc.connect(gain);
+      gain.connect(master);
+
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + duration + 0.03);
+    }
+
+    /************************************************************
+     * LIMPIEZA AUTOMÁTICA DE FIRESTORE
+     ************************************************************/
+    function scheduleAutoCleanupAfterFinished() {
+      if (!isHost || cleanupScheduled) return;
+
+      cleanupScheduled = true;
+
+      // Dejamos unos segundos para que se vea el ganador y el ranking final.
+      setTimeout(async () => {
+        try {
+          const latestRoom = (await getDoc(roomRef)).data();
+          if (!latestRoom || latestRoom.status !== "finished") return;
+
+          const deletes = players.map(p => deleteDoc(doc(playersRef, p.id)));
+          await Promise.all(deletes);
+
+          playerId = null;
+          localStorage.removeItem("trivial_player_id");
+
+          await setDoc(roomRef, {
+            status: "setup",
+            topic: "",
+            questionCount: 10,
+            questions: [],
+            currentQuestion: 0,
+            hostId: "",
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+
+          cleanupScheduled = false;
+        } catch (error) {
+          console.error("Error limpiando Firestore:", error);
+        }
+      }, 30000);
     }
 
     /************************************************************
