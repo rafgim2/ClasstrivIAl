@@ -996,9 +996,13 @@
 
       const answerKey = String(index);
       const allAnswered = players.every(player => Boolean(player.answers?.[answerKey]));
+      const timeExpired = getElapsedSeconds() >= QUESTION_SECONDS;
       const currentKey = `${room.generationId || "game"}_${index}`;
 
-      if (!allAnswered) {
+      // El host pasa automáticamente a la siguiente pregunta si:
+      // 1) todos han respondido, o
+      // 2) el temporizador llega a cero.
+      if (!allAnswered && !timeExpired) {
         if (autoAdvanceQuestionKey === currentKey) clearAutoAdvance();
         return;
       }
@@ -1170,6 +1174,10 @@
       const elapsed = getElapsedSeconds();
       const remaining = Math.max(0, Math.ceil(QUESTION_SECONDS - elapsed));
       $("timerBadge").textContent = String(remaining);
+
+      if (remaining <= 0) {
+        maybeAutoAdvanceQuestion();
+      }
     }
 
     function getElapsedSeconds() {
