@@ -749,6 +749,45 @@
       margin-bottom: 10px;
     }
 
+
+    .room-code-badge {
+      display: inline-block;
+      margin: 12px 0 18px;
+      padding: 14px 22px;
+      border-radius: 22px;
+      background: #111827;
+      color: #facc15;
+      font-size: clamp(34px, 8vw, 76px);
+      font-weight: 1000;
+      letter-spacing: 5px;
+      box-shadow: 0 14px 0 rgba(0,0,0,0.22), 0 22px 36px rgba(0,0,0,0.18);
+      user-select: all;
+    }
+
+    .room-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    @media (max-width: 700px) {
+      .room-actions { grid-template-columns: 1fr; }
+    }
+
+    .room-mini {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 18px;
+      background: #f8fafc;
+      border: 2px solid #e5e7eb;
+      color: #374151;
+      font-size: 14px;
+      font-weight: 900;
+      text-align: center;
+    }
+
+
     .hidden { display: none !important; }
   </style>
 </head>
@@ -789,7 +828,32 @@
 
     <div class="layout">
       <section class="card">
-        <div id="screenJoin" class="screen active">
+
+        <div id="screenRoom" class="screen active">
+          <h1>Elige una sala</h1>
+          <p class="subtitle">Cada clase juega en su propia sala, con su propio código.</p>
+
+          <div class="notice">
+            👩‍🏫 <strong>Profesor:</strong> inicia sesión con Google y crea una sala nueva.<br>
+            👦 <strong>Alumnos:</strong> escriben el código de la sala y luego su nombre.
+          </div>
+
+          <div class="form-grid">
+            <div>
+              <label for="roomCodeInput">Código de sala</label>
+              <input id="roomCodeInput" maxlength="8" placeholder="Ejemplo: 482913" autocomplete="off" />
+            </div>
+          </div>
+
+          <div class="room-actions">
+            <button class="btn secondary" id="joinRoomBtn">Entrar en sala 🔑</button>
+            <button class="btn warning" id="createRoomBtn">Crear sala nueva ✨</button>
+          </div>
+
+          <div class="notice hidden" id="roomNotice"></div>
+        </div>
+
+        <div id="screenJoin" class="screen">
           <h1>¡Entra al trivial!</h1>
           <p class="subtitle">Escribe tu nombre para unirte a la partida de clase.</p>
 
@@ -831,6 +895,7 @@
         <div id="screenWaiting" class="screen">
           <h1>Esperando jugadores...</h1>
           <p class="subtitle" id="waitingText">La partida está preparada.</p>
+          <div class="room-code-badge hidden" id="roomCodeBadge">----</div>
 
           <div class="status-big">
             <div>
@@ -887,6 +952,7 @@
         </div>
 
         <button class="btn danger small hidden" id="cancelGameBtn">Cancelar partida 🛑</button>
+        <button class="btn secondary small hidden" id="leaveRoomBtn" style="margin-top: 10px;">Salir de la sala 🚪</button>
 
         <h3 style="margin-top: 18px;">🏆 Ranking</h3>
         <div class="ranking-list" id="rankingList"></div>
@@ -895,7 +961,7 @@
         <div class="players-list" id="playersList"></div>
 
         <p class="small-note">
-          Sala fija: <strong>aula</strong>. 
+          Sala actual: <strong id="sideRoomCode">—</strong>. 
         </p>
 
         <div class="copyright-note">© By Rafael Gimeno</div>
@@ -920,7 +986,7 @@
     /************************************************************
      * CONFIGURACIÓN BÁSICA
      ************************************************************/
-    const ROOM_ID = "aula";
+    let roomCode = localStorage.getItem("trivial_room_code") || getRoomCodeFromUrl() || "";
     const FUNCTIONS_REGION = "europe-west1";
     const QUESTION_SECONDS = 20;
     const FINISHED_CLEANUP_DELAY_MS = 30000;
@@ -962,8 +1028,8 @@
     const auth = getAuth(app);
     const googleProvider = new GoogleAuthProvider();
 
-    const roomRef = doc(db, "trivialRooms", ROOM_ID);
-    const playersRef = collection(db, "trivialRooms", ROOM_ID, "players");
+    let roomRef = null;
+    let playersRef = null;
 
     let playerId = localStorage.getItem("trivial_player_id") || null;
     let playerName = localStorage.getItem("trivial_player_name") || "";
@@ -995,6 +1061,7 @@
     const $ = (id) => document.getElementById(id);
 
     const screens = {
+      room: $("screenRoom"),
       join: $("screenJoin"),
       setup: $("screenSetup"),
       waiting: $("screenWaiting"),
@@ -1009,6 +1076,9 @@
     /************************************************************
      * EVENTOS
      ************************************************************/
+    $("joinRoomBtn").addEventListener("click", joinExistingRoom);
+    $("createRoomBtn").addEventListener("click", createNewRoom);
+    $("leaveRoomBtn").addEventListener("click", leaveRoom);
     $("joinBtn").addEventListener("click", joinGame);
     $("saveSetupBtn").addEventListener("click", saveSetup);
     $("startGameBtn").addEventListener("click", startGame);
@@ -1020,6 +1090,10 @@
     $("winnerCloseBtn").addEventListener("click", hideWinnerCelebration);
     $("loserCloseBtn").addEventListener("click", hideLoserEncouragement);
 
+    $("roomCodeInput").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") joinExistingRoom();
+    });
+
     $("playerName").addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") joinGame();
     });
@@ -1029,6 +1103,7 @@
      ************************************************************/
     async function init() {
       $("playerName").value = playerName;
+      $("roomCodeInput").value = roomCode;
 
       onAuthStateChanged(auth, async (user) => {
         currentUser = user;
@@ -1038,19 +1113,126 @@
         renderByStatus();
       });
 
-      await ensureRoomExists();
-      listenRoom();
-      listenPlayers();
+      if (roomCode) {
+        await selectRoom(roomCode, { checkExists: true, silentIfMissing: true });
+      } else {
+        showScreen("room");
+        updateRoomStatus();
+        updateSideRoomCode();
+      }
     }
 
     async function ensureRoomExists() {
+      if (!roomRef) return;
       const snap = await getDoc(roomRef);
       if (!snap.exists()) {
         await resetRoomDocument();
       }
     }
 
+    function setupRoomRefs(code) {
+      roomCode = normalizeRoomCode(code);
+      roomRef = doc(db, "trivialRooms", roomCode);
+      playersRef = collection(db, "trivialRooms", roomCode, "players");
+      localStorage.setItem("trivial_room_code", roomCode);
+      updateUrlRoomCode(roomCode);
+      updateSideRoomCode();
+    }
+
+    async function selectRoom(code, { checkExists = true, silentIfMissing = false } = {}) {
+      const normalized = normalizeRoomCode(code);
+      if (!normalized) {
+        if (!silentIfMissing) showNotice("roomNotice", "Escribe un código de sala válido.");
+        return false;
+      }
+
+      const candidateRef = doc(db, "trivialRooms", normalized);
+      const snap = await getDoc(candidateRef);
+
+      if (checkExists && !snap.exists()) {
+        if (!silentIfMissing) showNotice("roomNotice", "Esa sala no existe todavía. Revisa el código o pide al profesor que cree una sala.");
+        localStorage.removeItem("trivial_room_code");
+        roomCode = "";
+        updateSideRoomCode();
+        showScreen("room");
+        return false;
+      }
+
+      unsubscribeRoom?.();
+      unsubscribePlayers?.();
+      room = null;
+      players = [];
+      myPlayer = null;
+      cleanupScheduled = false;
+      winnerCelebrationShownFor = "";
+      loserEncouragementShownFor = "";
+      hideWinnerCelebration();
+      hideLoserEncouragement();
+      clearAutoAdvance();
+
+      setupRoomRefs(normalized);
+      await ensureRoomExists();
+      listenRoom();
+      listenPlayers();
+      return true;
+    }
+
+    async function joinExistingRoom() {
+      const code = $("roomCodeInput").value.trim();
+      await selectRoom(code, { checkExists: true });
+    }
+
+    async function createNewRoom() {
+      if (!isAllowedHostAccount) {
+        showNotice("roomNotice", "Para crear una sala tienes que iniciar sesión con la cuenta autorizada del profesor.");
+        return;
+      }
+
+      const code = await generateUniqueRoomCode();
+      setupRoomRefs(code);
+      await resetRoomDocument({ hostEmail: currentUser?.email || "", hostUid: currentUser?.uid || "" });
+      listenRoom();
+      listenPlayers();
+      showScreen("join");
+      $("roomCodeInput").value = code;
+    }
+
+    async function generateUniqueRoomCode() {
+      for (let i = 0; i < 20; i++) {
+        const code = String(Math.floor(100000 + Math.random() * 900000));
+        const snap = await getDoc(doc(db, "trivialRooms", code));
+        if (!snap.exists()) return code;
+      }
+      return String(Date.now()).slice(-6);
+    }
+
+    function leaveRoom() {
+      stopHostMusic();
+      stopWinnerMusic();
+      hideWinnerCelebration();
+      hideLoserEncouragement();
+      clearAutoAdvance();
+      unsubscribeRoom?.();
+      unsubscribePlayers?.();
+      roomCode = "";
+      roomRef = null;
+      playersRef = null;
+      room = null;
+      players = [];
+      myPlayer = null;
+      localStorage.removeItem("trivial_room_code");
+      localStorage.removeItem("trivial_player_id");
+      playerId = null;
+      updateUrlRoomCode("");
+      updateSideRoomCode();
+      renderPlayers();
+      renderRanking();
+      updateRoomStatus();
+      showScreen("room");
+    }
+
     function listenRoom() {
+      if (!roomRef) return;
       unsubscribeRoom?.();
       unsubscribeRoom = onSnapshot(roomRef, (snap) => {
         room = snap.data();
@@ -1066,6 +1248,7 @@
     }
 
     function listenPlayers() {
+      if (!playersRef) return;
       unsubscribePlayers?.();
       unsubscribePlayers = onSnapshot(playersRef, (snapshot) => {
         players = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -1103,7 +1286,7 @@
       // Si la cuenta autorizada ha iniciado sesión, este dispositivo debe tomar
       // el control de la partida aunque antes hubiera entrado otro jugador.
       // Así los alumnos nunca se quedan como creadores por accidente.
-      if (!isAllowedHostAccount || !playerId || !room) return;
+      if (!isAllowedHostAccount || !playerId || !room || !roomRef) return;
       if (room.hostId === playerId) return;
 
       try {
@@ -1144,6 +1327,12 @@
      * UNIRSE
      ************************************************************/
     async function joinGame() {
+      if (!roomRef || !roomCode) {
+        showNotice("joinNotice", "Primero elige o crea una sala.");
+        showScreen("room");
+        return;
+      }
+
       const name = $("playerName").value.trim();
       if (!name) {
         showNotice("joinNotice", "Escribe tu nombre antes de entrar 😊");
@@ -1159,7 +1348,7 @@
       }
 
       const currentRoom = (await getDoc(roomRef)).data();
-      const shouldBecomeHost = isAllowedHostAccount;
+      const shouldBecomeHost = isAllowedHostAccount && (!currentRoom?.hostUid || currentRoom.hostUid === currentUser?.uid || currentRoom.hostEmail === currentUser?.email);
 
       await setDoc(doc(playersRef, playerId), {
         name: playerName,
@@ -1206,6 +1395,8 @@
         winnerId: "",
         winnerName: "",
         winnerScore: 0,
+        hostUid: currentUser?.uid || room.hostUid || "",
+        hostEmail: currentUser?.email || room.hostEmail || "",
         updatedAt: serverTimestamp()
       });
     }
@@ -1468,8 +1659,18 @@
      * PANTALLAS
      ************************************************************/
     function renderByStatus() {
+      if (!roomRef || !roomCode) {
+        showScreen("room");
+        updateCancelButton();
+        updateSideRoomCode();
+        return;
+      }
+
       if (!room) return;
 
+      updateRoomCodeBadge();
+      updateSideRoomCode();
+      updateLeaveRoomButton();
       updateCancelButton();
 
       if (!playerId || !myPlayer) {
@@ -1549,6 +1750,10 @@
     }
 
     function updateRoomStatus() {
+      if (!roomCode || !room) {
+        $("roomStatus").textContent = "Sin sala seleccionada";
+        return;
+      }
       const labels = {
         setup: "Configurando partida",
         waiting: "Esperando jugadores",
@@ -1556,7 +1761,24 @@
         playing: "Partida en marcha",
         finished: "Partida terminada"
       };
-      $("roomStatus").textContent = `${labels[room.status] || "Sala"} · ${players.length} jugadores`;
+      $("roomStatus").textContent = `Sala ${roomCode} · ${labels[room.status] || "Sala"} · ${players.length} jugadores`;
+    }
+
+    function updateSideRoomCode() {
+      const el = $("sideRoomCode");
+      if (el) el.textContent = roomCode || "—";
+    }
+
+    function updateRoomCodeBadge() {
+      const badge = $("roomCodeBadge");
+      if (!badge) return;
+      badge.textContent = roomCode || "----";
+      badge.classList.toggle("hidden", !roomCode || !["waiting", "loading", "playing"].includes(room?.status));
+    }
+
+    function updateLeaveRoomButton() {
+      const canLeave = Boolean(roomCode && playerId && myPlayer);
+      $("leaveRoomBtn").classList.toggle("hidden", !canLeave);
     }
 
     function updateCancelButton() {
@@ -1831,7 +2053,8 @@
       await resetRoomDocument();
     }
 
-    async function resetRoomDocument() {
+    async function resetRoomDocument(extra = {}) {
+      if (!roomRef) return;
       await setDoc(roomRef, {
         status: "setup",
         topic: "",
@@ -1843,6 +2066,9 @@
         winnerId: "",
         winnerName: "",
         winnerScore: 0,
+        roomCode,
+        hostUid: extra.hostUid || room?.hostUid || "",
+        hostEmail: extra.hostEmail || room?.hostEmail || "",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
@@ -1950,6 +2176,33 @@
       const el = $(id);
       el.textContent = text;
       el.classList.remove("hidden");
+    }
+
+    function normalizeRoomCode(code) {
+      return String(code || "")
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "")
+        .slice(0, 8);
+    }
+
+    function getRoomCodeFromUrl() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        return normalizeRoomCode(params.get("room") || params.get("sala") || "");
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function updateUrlRoomCode(code) {
+      try {
+        const url = new URL(window.location.href);
+        if (code) url.searchParams.set("room", code);
+        else url.searchParams.delete("room");
+        window.history.replaceState({}, "", url.toString());
+      } catch (error) {
+        // Si el navegador no permite modificar la URL, no pasa nada.
+      }
     }
 
     function escapeHtml(text) {
