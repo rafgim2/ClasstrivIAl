@@ -834,19 +834,27 @@
       <section class="card">
 
         <div id="screenRoom" class="screen active">
-          <h1>Crea una sala</h1>
-          <p class="subtitle">Cada clase juega en su propia sala privada, creada automáticamente.</p>
+          <h1>Elige una sala</h1>
+          <p class="subtitle">Cada clase juega en su propia sala privada.</p>
 
           <div class="notice">
-            👩‍🏫 <strong>Profesor:</strong> inicia sesión con Google y pulsa <strong>Crear sala nueva</strong>. La app generará una sala al azar y te dará un enlace para compartir.<br>
-            👦 <strong>Alumnos:</strong> no tienen que escribir ningún código. Solo entran desde el enlace que les dé el profesor y luego ponen su nombre.
+            👩‍🏫 <strong>Profesor:</strong> inicia sesión con Google y pulsa <strong>Crear sala nueva</strong>. La app generará un código al azar automáticamente.<br>
+            👦 <strong>Alumnos:</strong> escriben el código que les dé el profesor y luego ponen su nombre.
+          </div>
+
+          <div class="form-grid">
+            <div>
+              <label for="roomCodeInput">Código de sala para alumnos</label>
+              <input id="roomCodeInput" maxlength="8" placeholder="Ejemplo: 482913" autocomplete="off" inputmode="numeric" />
+            </div>
           </div>
 
           <div class="room-actions only-join" id="roomActions">
+            <button class="btn secondary" id="joinRoomBtn">Entrar en sala 🔑</button>
             <button class="btn warning hidden" id="createRoomBtn">Crear sala nueva ✨</button>
           </div>
 
-          <div class="room-mini" id="studentRoomHint">Si eres alumno, espera el enlace de tu profesor para entrar a la partida.</div>
+          <div class="room-mini" id="studentRoomHint">Si eres alumno, escribe el código de sala que te dé tu profesor.</div>
           <div class="notice hidden" id="roomNotice"></div>
         </div>
 
@@ -1076,6 +1084,7 @@
     /************************************************************
      * EVENTOS
      ************************************************************/
+    $("joinRoomBtn").addEventListener("click", joinExistingRoom);
     $("createRoomBtn").addEventListener("click", createNewRoom);
     $("leaveRoomBtn").addEventListener("click", leaveRoom);
     $("joinBtn").addEventListener("click", joinGame);
@@ -1090,6 +1099,10 @@
     $("loserCloseBtn").addEventListener("click", hideLoserEncouragement);
 
 
+    $("roomCodeInput").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") joinExistingRoom();
+    });
+
     $("playerName").addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") joinGame();
     });
@@ -1099,6 +1112,7 @@
      ************************************************************/
     async function init() {
       $("playerName").value = playerName;
+      $("roomCodeInput").value = roomCode;
       onAuthStateChanged(auth, async (user) => {
         currentUser = user;
         isAllowedHostAccount = Boolean(user?.email && user.email.toLowerCase() === ALLOWED_HOST_EMAIL.toLowerCase());
@@ -1167,6 +1181,7 @@
       clearAutoAdvance();
 
       setupRoomRefs(normalized);
+      $("roomCodeInput").value = normalized;
       hideNotice("roomNotice");
       updateRoomCodeBadge();
       await ensureRoomExists();
@@ -1175,6 +1190,14 @@
       return true;
     }
 
+
+    async function joinExistingRoom() {
+      const code = $("roomCodeInput").value.trim();
+      const ok = await selectRoom(code, { checkExists: true });
+      if (ok) {
+        showScreen("join");
+      }
+    }
 
     async function createNewRoom() {
       if (!isAllowedHostAccount) {
@@ -1207,6 +1230,7 @@
       loserEncouragementShownFor = "";
 
       setupRoomRefs(code);
+      $("roomCodeInput").value = code;
       updateRoomCodeBadge();
       updateSideRoomCode();
 
@@ -1347,15 +1371,17 @@
 
     function updateRoomAccessButtons() {
       const createBtn = $("createRoomBtn");
+      const actions = $("roomActions");
       const hint = $("studentRoomHint");
-      if (!createBtn) return;
+      if (!createBtn || !actions) return;
 
       const canCreateRoom = Boolean(isAllowedHostAccount);
       createBtn.classList.toggle("hidden", !canCreateRoom);
+      actions.classList.toggle("only-join", !canCreateRoom);
       if (hint) {
         hint.textContent = canCreateRoom
-          ? "Pulsa Crear sala nueva y comparte el enlace que aparecerá en el navegador con tus alumnos."
-          : "Si eres alumno, espera el enlace de tu profesor para entrar a la partida.";
+          ? "Como profesor puedes crear una sala nueva. Los alumnos también pueden entrar escribiendo el código."
+          : "Si eres alumno, escribe el código de sala que te dé tu profesor.";
       }
     }
 
