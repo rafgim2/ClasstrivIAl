@@ -1213,40 +1213,89 @@
         const ctx = new AudioContext();
 
         const master = ctx.createGain();
-        master.gain.value = 0.18;
-        master.connect(ctx.destination);
+        master.gain.value = 0.32;
+
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.value = -18;
+        compressor.knee.value = 18;
+        compressor.ratio.value = 8;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.18;
+
+        master.connect(compressor);
+        compressor.connect(ctx.destination);
 
         if (correct) {
-          playTone(ctx, master, 523.25, 0.00, 0.10);
-          playTone(ctx, master, 659.25, 0.10, 0.10);
-          playTone(ctx, master, 783.99, 0.20, 0.18);
+          // Fanfarria exagerada de acierto: brillante, ascendente y con doble capa.
+          playTone(ctx, master, 523.25, 0.00, 0.12, "triangle", 1.00);
+          playTone(ctx, master, 659.25, 0.08, 0.12, "triangle", 1.00);
+          playTone(ctx, master, 783.99, 0.16, 0.14, "triangle", 1.00);
+          playTone(ctx, master, 1046.50, 0.26, 0.28, "sine", 0.95);
+          playTone(ctx, master, 1318.51, 0.30, 0.22, "sine", 0.55);
+          playTone(ctx, master, 1567.98, 0.36, 0.18, "sine", 0.40);
+          playNoise(ctx, master, 0.02, 0.20, 0.22, "highpass");
         } else {
-          playTone(ctx, master, 196.00, 0.00, 0.14);
-          playTone(ctx, master, 146.83, 0.14, 0.22);
+          // Error más teatral: bocina descendente + golpe grave.
+          playTone(ctx, master, 220.00, 0.00, 0.24, "sawtooth", 0.95, 220.00, 150.00);
+          playTone(ctx, master, 146.83, 0.20, 0.32, "sawtooth", 0.95, 146.83, 92.50);
+          playTone(ctx, master, 73.42, 0.48, 0.28, "square", 0.55, 73.42, 55.00);
+          playNoise(ctx, master, 0.00, 0.18, 0.16, "lowpass");
         }
 
-        setTimeout(() => ctx.close(), 900);
+        setTimeout(() => ctx.close(), 1400);
       } catch (error) {
         // Si Web Audio no está disponible, simplemente no suena.
       }
     }
 
-    function playTone(ctx, master, frequency, delay, duration) {
+    function playTone(ctx, master, frequency, delay, duration, type = "sine", volume = 1, endFrequency = null) {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
 
-      osc.type = "sine";
-      osc.frequency.value = frequency;
+      osc.type = type;
+      osc.frequency.setValueAtTime(frequency, ctx.currentTime + delay);
+      if (endFrequency) {
+        osc.frequency.exponentialRampToValueAtTime(endFrequency, ctx.currentTime + delay + duration);
+      }
 
       gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
-      gain.gain.exponentialRampToValueAtTime(1, ctx.currentTime + delay + 0.015);
+      gain.gain.exponentialRampToValueAtTime(volume, ctx.currentTime + delay + 0.015);
       gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + duration);
 
       osc.connect(gain);
       gain.connect(master);
 
       osc.start(ctx.currentTime + delay);
-      osc.stop(ctx.currentTime + delay + duration + 0.03);
+      osc.stop(ctx.currentTime + delay + duration + 0.04);
+    }
+
+    function playNoise(ctx, master, delay, duration, volume = 0.2, filterType = "highpass") {
+      const bufferSize = Math.floor(ctx.sampleRate * duration);
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = filterType;
+      filter.frequency.value = filterType === "highpass" ? 1700 : 520;
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(volume, ctx.currentTime + delay + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + duration);
+
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(master);
+
+      source.start(ctx.currentTime + delay);
+      source.stop(ctx.currentTime + delay + duration + 0.02);
     }
 
     /************************************************************
