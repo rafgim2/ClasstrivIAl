@@ -1382,7 +1382,7 @@
           <button class="btn danger small hidden" id="teacherLogoutBtn" style="margin-top: 10px;">Cerrar sesión</button>
         </div>
 
-        <button class="btn danger small hidden" id="cancelGameBtn">Cancelar partida 🛑</button>
+        <button class="btn danger small hidden" id="cancelGameBtn" style="display: none;">Cancelar partida 🛑</button>
         <button class="btn secondary small hidden" id="leaveRoomBtn" style="margin-top: 10px;">Salir de la sala 🚪</button>
 
         <div class="side-section" id="rankingSection">
@@ -3225,4 +3225,18 @@
       el.style.display = 'block';
     });
   }
+</script>
+
+<script>
+  // Add logic to hide "Cancelar partida" button when teacher leaves the room
+  function hideCancelButtonWhenTeacherLeaves() {
+    const cancelGameButton = document.getElementById('cancelGameBtn');
+    // Assuming there's a flag or condition that determines when the teacher leaves
+    if (/* condition for teacher leaving */) {
+      cancelGameButton.style.display = 'none';
+    }
+  }
+
+  // Call this function when the teacher exits the room
+  hideCancelButtonWhenTeacherLeaves();
 </script>
