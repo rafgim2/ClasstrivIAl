@@ -1382,7 +1382,7 @@
           <button class="btn danger small hidden" id="teacherLogoutBtn" style="margin-top: 10px;">Cerrar sesión</button>
         </div>
 
-        <button class="btn danger small hidden" id="cancelGameBtn" style="display: none;">Cancelar partida 🛑</button>
+        <button class="btn danger small hidden" id="cancelGameBtn">Cancelar partida 🛑</button>
         <button class="btn secondary small hidden" id="leaveRoomBtn" style="display: none; margin-top: 10px;">Salir de la sala 🚪</button>
 
         <div class="side-section" id="rankingSection">
@@ -3246,6 +3246,34 @@
   function hideLeaveRoomButtonWhenTeacherLeaves() {
     const leaveRoomButton = document.getElementById('leaveRoomBtn');
     // Assuming there's a flag or condition that determines when the teacher leaves
+    if (/* condition for teacher leaving */) {
+      leaveRoomButton.style.display = 'none';
+    }
+  }
+
+  // Call this function when the teacher exits the room
+  hideLeaveRoomButtonWhenTeacherLeaves();
+</script>
+
+<script>
+  // Function to show the "Cancelar partida" button once the game has started
+  function showCancelGameButtonWhenGameStarts() {
+    const cancelGameButton = document.getElementById('cancelGameBtn');
+    // Assuming there's a flag or condition that determines when the game starts
+    if (/* condition for game start */) {
+      cancelGameButton.style.display = 'inline-block';  // Show the button
+    }
+  }
+
+  // Call this function when the game starts
+  showCancelGameButtonWhenGameStarts();
+</script>
+
+<script>
+  // Hide the "Salir de sala" button when the teacher leaves the room
+  function hideLeaveRoomButtonWhenTeacherLeaves() {
+    const leaveRoomButton = document.getElementById('leaveRoomBtn');
+    // Assuming there's a flag or condition for when the teacher leaves
     if (/* condition for teacher leaving */) {
       leaveRoomButton.style.display = 'none';
     }
