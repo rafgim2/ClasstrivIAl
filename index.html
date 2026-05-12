@@ -1218,7 +1218,9 @@
 
     /* 🖥️ Pantalla completa al empezar la partida */
     body.game-fullscreen-ui {
-      overflow: hidden;
+      overflow-x: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
     }
 
     body.game-fullscreen-ui .topbar {
@@ -1235,6 +1237,18 @@
     body.game-fullscreen-ui .side-card {
       min-height: calc(100dvh - 24px);
     }
+
+    /* 📱 En pantallas bajitas: compacta un poco para que quepa mejor (y si no, se puede hacer scroll) */
+    @media (max-height: 740px) {
+      body.game-fullscreen-ui .app { padding-top: 8px; padding-bottom: 8px; }
+      body.game-fullscreen-ui .card { padding: 16px; }
+      body.game-fullscreen-ui .side-card { padding: 16px; }
+      body.game-fullscreen-ui .question-meta { margin-bottom: 14px; gap: 10px; }
+      body.game-fullscreen-ui .question-box { margin-bottom: 14px; padding: 16px; }
+      body.game-fullscreen-ui .answer { min-height: 86px; padding: 14px; }
+      body.game-fullscreen-ui #nextQuestionBtn { margin-top: 14px !important; }
+    }
+
 
     .fullscreen-overlay {
       position: fixed;
@@ -2077,6 +2091,12 @@
         return;
       }
 
+      // 🔳 Pantalla completa: intento inmediato al entrar (clic/Enter del usuario).
+      // Importante: debe ocurrir ANTES del primer await para que el navegador lo acepte como gesto.
+      if (fullscreenSupported() && !isFullscreenActive()) {
+        requestAppFullscreen().catch(() => {});
+      }
+
       // El profesor autorizado entra automáticamente como host, sin pedir nombre.
       if (isAllowedHostAccount) {
         await ensureHostPlayer();
@@ -2462,17 +2482,16 @@
     }
 
     function getCurrentGameId() {
-      return room?.generationId || "";
+      return room?.generationId || (roomCode ? `room_${roomCode}` : "");
     }
 
     function updateGameFullscreenUi() {
       const active = Boolean(room && ["loading", "playing", "finished"].includes(room.status));
       document.body.classList.toggle("game-fullscreen-ui", active);
 
-      // El pop-up solo tiene sentido durante la partida.
-      if (!active || room?.status !== "playing") {
-        hideFullscreenOverlay();
-      }
+      // El pop-up de pantalla completa puede mostrarse ya en la sala (waiting) para que nadie llegue tarde.
+      // La lógica de mostrar/ocultar se centraliza en maybeOfferFullscreen().
+      maybeOfferFullscreen();
     }
 
     async function enterFullscreenFromPrompt() {
@@ -2504,7 +2523,15 @@
       const overlay = $("fullscreenOverlay");
       if (!overlay) return;
 
-      if (!room || room.status !== "playing") {
+      // Solo tiene sentido si ya hemos entrado como jugador (no en la pantalla de nombre).
+      if (!playerId || !myPlayer || myPlayer.isTeacher) {
+        overlay.classList.add("hidden");
+        return;
+      }
+
+      // Permitimos ofrecer pantalla completa ya en la sala (setup/waiting) para que nadie llegue tarde,
+      // y también durante loading/playing.
+      if (!room || !["setup", "waiting", "loading", "playing"].includes(room.status)) {
         overlay.classList.add("hidden");
         return;
       }
