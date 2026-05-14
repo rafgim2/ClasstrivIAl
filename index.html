@@ -1846,7 +1846,7 @@
               <span>Leer cada pregunta en voz alta antes de responder 🔊</span>
             </label>
             <div class="voice-toggle-hint">
-              Activado: el profesor lee la pregunta y los alumnos esperan hasta que termina la voz. Desactivado: los alumnos pueden responder desde que aparece la pregunta.
+              Activado: profesor y alumnos escuchan la pregunta en voz alta, y los alumnos esperan hasta que termina la voz. Desactivado: los alumnos pueden responder desde que aparece la pregunta.
             </div>
           </div>
 
@@ -2116,15 +2116,18 @@
     let unsubscribeRoom = null;
     let unsubscribePlayers = null;
     let lastSpokenQuestionKey = "";
+    let localQuestionSpeechKey = "";
+    const finishedLocalQuestionSpeechKeys = new Set();
     const unlockedQuestionSpeechKeys = new Set();
 
     /************************************************************
-     * MÚSICA DE FONDO (SOLO PROFESOR)
+     * MÚSICA DE FONDO (PROFESOR Y ALUMNOS)
      * - Archivos esperados: music1.mp3 ... music18.mp3
      * - El profesor elige uno al azar al iniciar la partida.
-     * - Los alumnos no reproducen música ambiente desde su dispositivo.
-     * - Los efectos de acierto/error y la fanfarria del campeón sí pueden sonar
-     *   en el alumno correspondiente.
+     * - Todos reproducen esa misma música desde que la sala entra en loading
+     *   mientras se preparan las preguntas.
+     * - Los efectos de acierto/error y la fanfarria del campeón siguen sonando
+     *   solo donde corresponde.
      ************************************************************/
     const HOST_MUSIC_TOTAL = 18;
     const HOST_MUSIC_STORAGE_KEY = "trivial_host_music_bag_v1";
@@ -2334,6 +2337,8 @@
       clearAutoAdvance();
       cancelQuestionSpeech();
       lastSpokenQuestionKey = "";
+      localQuestionSpeechKey = "";
+      finishedLocalQuestionSpeechKeys.clear();
       unlockedQuestionSpeechKeys.clear();
 
       setupRoomRefs(normalized);
@@ -3170,7 +3175,7 @@
 
       const isTeacherObserver = Boolean(isHost || myPlayer?.isTeacher);
       const questionLocked = isQuestionLockedForAnswering();
-      handleTeacherQuestionSpeech(question, index);
+      handleQuestionSpeechForThisDevice(question, index);
       const myAnswers = myPlayer?.answers || {};
       const answerKey = String(index);
       const alreadyAnswered = Boolean(myAnswers[answerKey]);
@@ -3424,8 +3429,8 @@
       }
 
       if (room.status === "loading") {
-        // La música empieza ya mientras se preparan las preguntas,
-        // pero solo en el dispositivo del profesor.
+        // La música empieza ya mientras se preparan las preguntas
+        // tanto en el profesor como en los alumnos.
         startHostMusic();
         showScreen("loading");
       }
@@ -3836,14 +3841,35 @@
       return `${generationId || "game"}_${questionIndex}`;
     }
 
+    function getCurrentQuestionReadKey() {
+      if (!room || room.status !== "playing") return "";
+      const index = room.currentQuestion || 0;
+      return room.questionReadKey || makeQuestionReadKey(room.generationId || "game", index);
+    }
+
+    function isLocalQuestionSpeechPending(readKey = getCurrentQuestionReadKey()) {
+      return Boolean(
+        readKey &&
+        localQuestionSpeechKey === readKey &&
+        !finishedLocalQuestionSpeechKeys.has(readKey)
+      );
+    }
+
     function isQuestionLockedForAnswering() {
       if (!room || room.status !== "playing") return false;
       if (room.questionVoiceEnabled === false) return false;
-      return room.questionReading === true || !room.questionStartedAt?.toMillis;
+
+      const readKey = getCurrentQuestionReadKey();
+      const globalLocked = room.questionReading === true || !room.questionStartedAt?.toMillis;
+      const localLocked = isLocalQuestionSpeechPending(readKey);
+
+      // Con lectura activada, se espera tanto al desbloqueo del profesor en Firestore
+      // como a que termine la voz en este dispositivo concreto.
+      return globalLocked || localLocked;
     }
 
-    function handleTeacherQuestionSpeech(question, index) {
-      if (!isHost || !roomRef || !question?.question) return;
+    function handleQuestionSpeechForThisDevice(question, index) {
+      if (!question?.question) return;
       if (room.questionVoiceEnabled === false) return;
       if (room.status !== "playing" || room.questionReading !== true) return;
 
@@ -3851,7 +3877,9 @@
       if (lastSpokenQuestionKey === readKey) return;
       lastSpokenQuestionKey = readKey;
 
-      speakQuestionAndUnlock(question.question, readKey);
+      // Profesor y alumnos leen la misma pregunta. Solo el profesor desbloquea
+      // la pregunta en Firestore cuando termina su lectura.
+      speakQuestionOnThisDevice(question.question, readKey, { unlockRoomWhenFinished: isHost });
     }
 
     function getPreferredQuestionVoice() {
@@ -3871,14 +3899,44 @@
         || null;
     }
 
-    function speakQuestionAndUnlock(text, readKey) {
+    function finishLocalQuestionSpeech(readKey) {
+      if (!readKey || finishedLocalQuestionSpeechKeys.has(readKey)) return;
+
+      finishedLocalQuestionSpeechKeys.add(readKey);
+      if (localQuestionSpeechKey === readKey) {
+        localQuestionSpeechKey = "";
+      }
+
+      // Si Firestore ya ha desbloqueado la pregunta, este render local reactiva
+      // los botones en cuanto termine la voz de este dispositivo.
+      if (room?.status === "playing" && getCurrentQuestionReadKey() === readKey) {
+        renderGame();
+      }
+    }
+
+    function speakQuestionOnThisDevice(text, readKey, { unlockRoomWhenFinished = false } = {}) {
+      localQuestionSpeechKey = readKey;
+      finishedLocalQuestionSpeechKeys.delete(readKey);
+
+      const finish = () => {
+        finishLocalQuestionSpeech(readKey);
+        if (unlockRoomWhenFinished) {
+          unlockQuestionAfterReading(readKey);
+        }
+      };
+
       if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
         // Si el navegador no tiene voz, desbloqueamos igualmente para no dejar la partida parada.
-        setTimeout(() => unlockQuestionAfterReading(readKey), 900);
+        setTimeout(finish, 900);
         return;
       }
 
       const speakNow = () => {
+        if (room?.status !== "playing" || getCurrentQuestionReadKey() !== readKey) {
+          finish();
+          return;
+        }
+
         const utterance = new SpeechSynthesisUtterance(text);
         const voice = getPreferredQuestionVoice();
         if (voice) utterance.voice = voice;
@@ -3888,14 +3946,14 @@
         utterance.volume = 1;
 
         let finished = false;
-        const finish = () => {
+        const safeFinish = () => {
           if (finished) return;
           finished = true;
-          unlockQuestionAfterReading(readKey);
+          finish();
         };
 
-        utterance.onend = finish;
-        utterance.onerror = finish;
+        utterance.onend = safeFinish;
+        utterance.onerror = safeFinish;
 
         try {
           window.speechSynthesis.cancel();
@@ -3906,10 +3964,10 @@
             QUESTION_SPEECH_FALLBACK_MS,
             Math.max(3500, text.length * 95)
           );
-          setTimeout(finish, estimatedMs);
+          setTimeout(safeFinish, estimatedMs);
         } catch (error) {
           console.error("No se ha podido leer la pregunta en voz alta:", error);
-          finish();
+          safeFinish();
         }
       };
 
@@ -3942,6 +4000,11 @@
     }
 
     function cancelQuestionSpeech() {
+      if (localQuestionSpeechKey) {
+        finishedLocalQuestionSpeechKeys.add(localQuestionSpeechKey);
+        localQuestionSpeechKey = "";
+      }
+
       if (!("speechSynthesis" in window)) return;
       try {
         window.speechSynthesis.cancel();
@@ -3949,14 +4012,11 @@
     }
 
     function startHostMusic(forceFile = null) {
-      // La música de fondo solo debe sonar en la pantalla/dispositivo del profesor.
-      if (!isHost) {
-        hostMusic.pause();
-        hostMusic.currentTime = 0;
-        return;
-      }
+      // Música ambiente: debe sonar en profesor y alumnos desde que se preparan las preguntas.
+      // El profesor elige el archivo al iniciar la partida y lo guarda en bgMusicFile para sincronizarlo.
+      const desired = forceFile || room?.bgMusicFile || currentHostMusicFile || (isHost ? getNextHostMusicFile() : "");
+      if (!desired) return;
 
-      const desired = forceFile || room?.bgMusicFile || currentHostMusicFile || getNextHostMusicFile();
       setHostMusicSource(desired);
 
       hostMusic.play().catch(() => {
@@ -3971,8 +4031,7 @@
     }
 
     function canPlayWinnerMusicHere() {
-      // La música de fondo sigue siendo solo del profesor.
-      // La fanfarria, en cambio, debe sonar también al alumno que ha ganado.
+      // La fanfarria debe sonar en el profesor y también al alumno que ha ganado.
       if (isHost) return true;
       const winner = getStoredWinner();
       return Boolean(winner && winner.id === playerId);
@@ -4029,7 +4088,6 @@
 
     function playAnswerSound(correct) {
       // Efectos de acierto/error: deben sonar en el dispositivo del alumno que responde.
-      // La música de fondo sigue limitada al profesor en startHostMusic().
       try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         const ctx = new AudioContext();
