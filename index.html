@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Trivial IA para clase</title>
+  <title>Trivial IA para clase · música solo profesor</title>
 
   <style>
     :root {
@@ -2122,13 +2122,12 @@
     const unlockedQuestionSpeechKeys = new Set();
 
     /************************************************************
-     * MÚSICA DE FONDO (PROFESOR Y ALUMNOS)
+     * MÚSICA DE FONDO (SOLO PROFESOR)
      * - Archivos esperados: music1.mp3 ... music18.mp3
      * - El profesor elige uno al azar al iniciar la partida.
-     * - Todos reproducen esa misma música desde que la sala entra en loading
-     *   mientras se preparan las preguntas.
-     * - Los efectos de acierto/error y la fanfarria del campeón siguen sonando
-     *   solo donde corresponde.
+     * - Solo el dispositivo del profesor reproduce música ambiente desde loading.
+     * - Los alumnos no cargan ni reproducen música de fondo.
+     * - En alumnos solo suenan los efectos de acierto/error al responder.
      ************************************************************/
     const HOST_MUSIC_TOTAL = 18;
     const HOST_MUSIC_STORAGE_KEY = "trivial_host_music_bag_v1";
@@ -2177,7 +2176,7 @@
       try { hostMusic.load(); } catch (_) {}
     }
 
-    // Música de victoria: suena en el profesor y en el dispositivo del jugador ganador.
+    // Música de victoria: solo suena en el dispositivo del profesor.
     const winnerMusic = new Audio("ganador.mp3");
     winnerMusic.loop = false;
     winnerMusic.volume = 0.9;
@@ -2835,9 +2834,23 @@
           updatedAt: serverTimestamp()
         });
       } catch (error) {
-        console.error(error);
+        console.error("ERROR REAL AL PREPARAR PREGUNTAS:", error);
+
         stopHostMusic();
-        alert("No se han podido preparar las preguntas. Revisa la Firebase Function generateQuestions, la región y los registros de Functions.");
+
+        const code = error?.code || "sin código";
+        const message = error?.message || String(error);
+        const details = error?.details
+          ? JSON.stringify(error.details, null, 2)
+          : "sin detalles";
+
+        alert(
+          "No se han podido preparar las preguntas.\n\n" +
+          "Código: " + code + "\n\n" +
+          "Mensaje: " + message + "\n\n" +
+          "Detalles:\n" + details
+        );
+
         await updateDoc(roomRef, {
           status: "waiting",
           generationId: "",
@@ -3235,7 +3248,7 @@
 
       if (!isTeacherObserver && questionLocked && !alreadyAnswered) {
         feedback.classList.add("show", "info");
-        feedback.textContent = "🔊 Escucha la pregunta. Podrás responder cuando termine la voz.";
+        feedback.textContent = "⏳ Espera un momento. Podrás responder cuando el profesor termine la lectura.";
       }
 
       if (!isTeacherObserver && alreadyAnswered) {
@@ -3446,15 +3459,15 @@
       }
 
       if (room.status === "loading") {
-        // La música empieza ya mientras se preparan las preguntas
-        // tanto en el profesor como en los alumnos.
+        // La música empieza ya mientras se preparan las preguntas,
+        // pero solo en el dispositivo del profesor.
         startHostMusic();
         showScreen("loading");
       }
 
       if (room.status === "playing") {
-        // Mantenemos esta llamada como refuerzo por si el navegador bloqueó
-        // el primer intento de reproducción durante la pantalla de carga.
+        // Refuerzo por si el navegador del profesor bloqueó el primer intento
+        // de reproducción durante la pantalla de carga. En alumnos no hace nada.
         startHostMusic();
         showScreen("game");
         renderGame();
@@ -3890,13 +3903,16 @@
       if (room.questionVoiceEnabled === false) return;
       if (room.status !== "playing" || room.questionReading !== true) return;
 
+      // La lectura en voz alta SOLO debe sonar en el dispositivo del profesor.
+      // Los alumnos esperan el desbloqueo global de Firestore, pero no ejecutan TTS.
+      if (!isHost) return;
+
       const readKey = room.questionReadKey || makeQuestionReadKey(room.generationId || "game", index);
       if (lastSpokenQuestionKey === readKey) return;
       lastSpokenQuestionKey = readKey;
 
-      // Profesor y alumnos leen la misma pregunta. Solo el profesor desbloquea
-      // la pregunta en Firestore cuando termina su lectura.
-      speakQuestionOnThisDevice(question.question, readKey, { unlockRoomWhenFinished: isHost });
+      // El profesor desbloquea la pregunta en Firestore cuando termina su lectura.
+      speakQuestionOnThisDevice(question.question, readKey, { unlockRoomWhenFinished: true });
     }
 
     function getPreferredQuestionVoice() {
@@ -4056,9 +4072,18 @@
     }
 
     function startHostMusic(forceFile = null) {
-      // Música ambiente: debe sonar en profesor y alumnos desde que se preparan las preguntas.
-      // El profesor elige el archivo al iniciar la partida y lo guarda en bgMusicFile para sincronizarlo.
-      const desired = forceFile || room?.bgMusicFile || currentHostMusicFile || (isHost ? getNextHostMusicFile() : "");
+      // Música ambiente: solo debe sonar en el dispositivo del profesor.
+      // Aunque la sala guarde bgMusicFile, los alumnos no lo cargan ni lo reproducen.
+      if (!isHost && !myPlayer?.isTeacher) {
+        try {
+          hostMusic.pause();
+          hostMusic.currentTime = 0;
+        } catch (_) {}
+        return;
+      }
+
+      // El profesor elige el archivo al iniciar la partida y lo guarda en bgMusicFile.
+      const desired = forceFile || room?.bgMusicFile || currentHostMusicFile || getNextHostMusicFile();
       if (!desired) return;
 
       setHostMusicSource(desired);
@@ -4075,10 +4100,8 @@
     }
 
     function canPlayWinnerMusicHere() {
-      // La fanfarria debe sonar en el profesor y también al alumno que ha ganado.
-      if (isHost) return true;
-      const winner = getStoredWinner();
-      return Boolean(winner && winner.id === playerId);
+      // La fanfarria/música de victoria solo debe sonar en el profesor.
+      return Boolean(isHost || myPlayer?.isTeacher);
     }
 
     function playWinnerMusic() {
@@ -4131,7 +4154,7 @@
     }
 
     function playAnswerSound(correct) {
-      // Efectos de acierto/error: deben sonar en el dispositivo del alumno que responde.
+      // Efectos de acierto/error: son los únicos sonidos de juego que suenan en alumnos.
       try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         const ctx = new AudioContext();
