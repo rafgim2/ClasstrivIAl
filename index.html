@@ -1032,6 +1032,12 @@
       border: 4px solid #fca5a5;
     }
 
+    .feedback.info {
+      background: #eef2ff;
+      color: #312e81;
+      border: 4px solid #c7d2fe;
+    }
+
     .big-score {
       font-size: clamp(56px, 9vw, 120px);
       font-weight: 1000;
@@ -1973,6 +1979,8 @@
     let roomCode = getRoomCodeFromUrl() || "";
     const FUNCTIONS_REGION = "europe-west1";
     const QUESTION_SECONDS = 20;
+    const QUESTION_SPEECH_LANG = "es-ES";
+    const QUESTION_SPEECH_FALLBACK_MS = 30000;
     const FINISHED_CLEANUP_DELAY_MS = 30000;
     const AUTO_NEXT_DELAY_MS = 1500;
     const ALLOWED_HOST_EMAIL = "rafgim36@gmail.com";
@@ -2055,6 +2063,8 @@
     let lastSetupRoomSyncKey = "";
     let unsubscribeRoom = null;
     let unsubscribePlayers = null;
+    let lastSpokenQuestionKey = "";
+    const unlockedQuestionSpeechKeys = new Set();
 
     /************************************************************
      * MÚSICA DE FONDO (PROFESOR Y ALUMNOS)
@@ -2269,6 +2279,9 @@
       hideWinnerCelebration();
       hideLoserEncouragement();
       clearAutoAdvance();
+      cancelQuestionSpeech();
+      lastSpokenQuestionKey = "";
+      unlockedQuestionSpeechKeys.clear();
 
       setupRoomRefs(normalized);
       $("roomCodeInput").value = normalized;
@@ -2335,6 +2348,9 @@
       hideWinnerCelebration();
       hideLoserEncouragement();
       clearAutoAdvance();
+      cancelQuestionSpeech();
+      lastSpokenQuestionKey = "";
+      unlockedQuestionSpeechKeys.clear();
 
       room = null;
       players = [];
@@ -2376,6 +2392,9 @@
       hideWinnerCelebration();
       hideLoserEncouragement();
       clearAutoAdvance();
+      cancelQuestionSpeech();
+      lastSpokenQuestionKey = "";
+      unlockedQuestionSpeechKeys.clear();
       unsubscribeRoom?.();
       unsubscribePlayers?.();
       roomCode = "";
@@ -2665,6 +2684,9 @@
         status: "waiting",
         questions: [],
         currentQuestion: 0,
+        questionReading: false,
+        questionReadKey: "",
+        questionStartedAt: null,
         generationId: "",
         winnerId: "",
         winnerName: "",
@@ -2729,7 +2751,9 @@
           status: "playing",
           questions,
           currentQuestion: 0,
-          questionStartedAt: serverTimestamp(),
+          questionReading: true,
+          questionReadKey: makeQuestionReadKey(generationId, 0),
+          questionStartedAt: null,
           updatedAt: serverTimestamp()
         });
       } catch (error) {
@@ -3088,6 +3112,8 @@
       $("questionText").textContent = question.question;
 
       const isTeacherObserver = Boolean(isHost || myPlayer?.isTeacher);
+      const questionLocked = isQuestionLockedForAnswering();
+      handleTeacherQuestionSpeech(question, index);
       const myAnswers = myPlayer?.answers || {};
       const answerKey = String(index);
       const alreadyAnswered = Boolean(myAnswers[answerKey]);
@@ -3110,6 +3136,11 @@
           btn.classList.add("teacher-view");
           btn.setAttribute("aria-disabled", "true");
           btn.setAttribute("tabindex", "-1");
+        } else if (questionLocked) {
+          btn.classList.add("disabled");
+          btn.disabled = true;
+          btn.setAttribute("aria-disabled", "true");
+          btn.setAttribute("title", "Espera a que termine la lectura de la pregunta");
         } else {
           btn.onclick = () => answerQuestion(optionIndex);
         }
@@ -3123,6 +3154,11 @@
         answersBox.appendChild(btn);
       });
 
+      if (!isTeacherObserver && questionLocked && !alreadyAnswered) {
+        feedback.classList.add("show", "info");
+        feedback.textContent = "🔊 Escucha la pregunta. Podrás responder cuando termine la voz.";
+      }
+
       if (!isTeacherObserver && alreadyAnswered) {
         const answer = myAnswers[answerKey];
         feedback.classList.add("show", answer.correct ? "good" : "bad");
@@ -3132,7 +3168,10 @@
       }
 
       $("nextQuestionBtn").classList.toggle("hidden", !isHost);
-      $("nextQuestionBtn").textContent = index >= total - 1 ? "Ver resultados 🏆" : "Siguiente pregunta ➡️";
+      $("nextQuestionBtn").disabled = Boolean(isHost && questionLocked);
+      $("nextQuestionBtn").textContent = questionLocked
+        ? "Leyendo pregunta... 🔊"
+        : (index >= total - 1 ? "Ver resultados 🏆" : "Siguiente pregunta ➡️");
 
       startTimer();
     }
@@ -3140,6 +3179,8 @@
     async function answerQuestion(selectedIndex) {
       if (!playerId || !myPlayer || room.status !== "playing") return;
       if (isHost || myPlayer.isTeacher) return;
+
+      if (isQuestionLockedForAnswering()) return;
 
       const index = room.currentQuestion || 0;
       const question = room.questions[index];
@@ -3170,6 +3211,7 @@
       if (!isHost || room.status !== "playing") return;
 
       clearAutoAdvance();
+      cancelQuestionSpeech();
 
       const next = (room.currentQuestion || 0) + 1;
       const total = room.questions?.length || 0;
@@ -3188,13 +3230,17 @@
           winnerId: finalWinner?.id || "",
           winnerName: finalWinner?.name || "",
           winnerScore: finalWinner?.score || 0,
+          questionReading: false,
+          questionReadKey: "",
           finishedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
       } else {
         await updateDoc(roomRef, {
           currentQuestion: next,
-          questionStartedAt: serverTimestamp(),
+          questionReading: true,
+          questionReadKey: makeQuestionReadKey(room.generationId || "game", next),
+          questionStartedAt: null,
           updatedAt: serverTimestamp()
         });
       }
@@ -3699,6 +3745,11 @@
     }
 
     function tickTimer() {
+      if (isQuestionLockedForAnswering()) {
+        $("timerBadge").textContent = "🔊";
+        return;
+      }
+
       const elapsed = getElapsedSeconds();
       const remaining = Math.max(0, Math.ceil(QUESTION_SECONDS - elapsed));
       $("timerBadge").textContent = String(remaining);
@@ -3722,6 +3773,120 @@
     /************************************************************
      * AUDIO
      ************************************************************/
+    function makeQuestionReadKey(generationId, questionIndex) {
+      return `${generationId || "game"}_${questionIndex}`;
+    }
+
+    function isQuestionLockedForAnswering() {
+      if (!room || room.status !== "playing") return false;
+      return room.questionReading === true || !room.questionStartedAt?.toMillis;
+    }
+
+    function handleTeacherQuestionSpeech(question, index) {
+      if (!isHost || !roomRef || !question?.question) return;
+      if (room.status !== "playing" || room.questionReading !== true) return;
+
+      const readKey = room.questionReadKey || makeQuestionReadKey(room.generationId || "game", index);
+      if (lastSpokenQuestionKey === readKey) return;
+      lastSpokenQuestionKey = readKey;
+
+      speakQuestionAndUnlock(question.question, readKey);
+    }
+
+    function getPreferredQuestionVoice() {
+      if (!("speechSynthesis" in window)) return null;
+
+      const voices = window.speechSynthesis.getVoices() || [];
+      const spanishVoices = voices.filter(voice => String(voice.lang || "").toLowerCase().startsWith("es"));
+      const femaleHints = [
+        "female", "mujer", "femenina", "helena", "mónica", "monica", "paulina", "sabina",
+        "lucía", "lucia", "laura", "maria", "maría", "carmen", "google español"
+      ];
+
+      return spanishVoices.find(voice => femaleHints.some(hint => voice.name.toLowerCase().includes(hint)))
+        || spanishVoices.find(voice => voice.lang === QUESTION_SPEECH_LANG)
+        || spanishVoices[0]
+        || voices[0]
+        || null;
+    }
+
+    function speakQuestionAndUnlock(text, readKey) {
+      if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
+        // Si el navegador no tiene voz, desbloqueamos igualmente para no dejar la partida parada.
+        setTimeout(() => unlockQuestionAfterReading(readKey), 900);
+        return;
+      }
+
+      const speakNow = () => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        const voice = getPreferredQuestionVoice();
+        if (voice) utterance.voice = voice;
+        utterance.lang = voice?.lang || QUESTION_SPEECH_LANG;
+        utterance.rate = 0.92;
+        utterance.pitch = 1.08;
+        utterance.volume = 1;
+
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          unlockQuestionAfterReading(readKey);
+        };
+
+        utterance.onend = finish;
+        utterance.onerror = finish;
+
+        try {
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utterance);
+
+          // Fallback por si algún navegador no dispara onend/onerror.
+          const estimatedMs = Math.min(
+            QUESTION_SPEECH_FALLBACK_MS,
+            Math.max(3500, text.length * 95)
+          );
+          setTimeout(finish, estimatedMs);
+        } catch (error) {
+          console.error("No se ha podido leer la pregunta en voz alta:", error);
+          finish();
+        }
+      };
+
+      // Algunos navegadores cargan las voces de forma asíncrona.
+      if (window.speechSynthesis.getVoices().length === 0) {
+        setTimeout(speakNow, 350);
+      } else {
+        speakNow();
+      }
+    }
+
+    async function unlockQuestionAfterReading(readKey) {
+      if (!isHost || !roomRef) return;
+      if (unlockedQuestionSpeechKeys.has(readKey)) return;
+      if (room?.questionReadKey !== readKey) return;
+
+      unlockedQuestionSpeechKeys.add(readKey);
+
+      try {
+        await updateDoc(roomRef, {
+          questionReading: false,
+          questionStartedAt: serverTimestamp(),
+          questionUnlockedAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      } catch (error) {
+        unlockedQuestionSpeechKeys.delete(readKey);
+        console.error("No se ha podido desbloquear la pregunta:", error);
+      }
+    }
+
+    function cancelQuestionSpeech() {
+      if (!("speechSynthesis" in window)) return;
+      try {
+        window.speechSynthesis.cancel();
+      } catch (_) {}
+    }
+
     function startHostMusic(forceFile = null) {
       // Aunque el nombre histórico sea hostMusic, ahora la música de fondo
       // se reproduce también en los dispositivos de los alumnos.
@@ -3746,6 +3911,7 @@
     }
 
     function stopHostMusic() {
+      cancelQuestionSpeech();
       hostMusic.pause();
       hostMusic.currentTime = 0;
     }
@@ -3897,6 +4063,9 @@
       hideWinnerCelebration();
       hideLoserEncouragement();
       clearAutoAdvance();
+      cancelQuestionSpeech();
+      lastSpokenQuestionKey = "";
+      unlockedQuestionSpeechKeys.clear();
       cleanupScheduled = false;
       winnerCelebrationShownFor = "";
       loserEncouragementShownFor = "";
@@ -3924,6 +4093,9 @@
         completeWithAi: true,
         questions: [],
         currentQuestion: 0,
+        questionReading: false,
+        questionReadKey: "",
+        questionStartedAt: null,
         hostId: "",
         generationId: "",
         bgMusicFile: "",
