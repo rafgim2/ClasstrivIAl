@@ -2122,7 +2122,9 @@
      * MÚSICA DE FONDO (SOLO PROFESOR)
      * - Archivos esperados: music1.mp3 ... music18.mp3
      * - El profesor elige uno al azar al iniciar la partida.
-     * - Los alumnos no reproducen música ni sonidos desde su dispositivo.
+     * - Los alumnos no reproducen música ambiente desde su dispositivo.
+     * - Los efectos de acierto/error y la fanfarria del campeón sí pueden sonar
+     *   en el alumno correspondiente.
      ************************************************************/
     const HOST_MUSIC_TOTAL = 18;
     const HOST_MUSIC_STORAGE_KEY = "trivial_host_music_bag_v1";
@@ -2171,7 +2173,7 @@
       try { hostMusic.load(); } catch (_) {}
     }
 
-    // Música de victoria: solo suena en el dispositivo del jugador ganador.
+    // Música de victoria: suena en el profesor y en el dispositivo del jugador ganador.
     const winnerMusic = new Audio("ganador.mp3");
     winnerMusic.loop = false;
     winnerMusic.volume = 0.9;
@@ -3968,9 +3970,16 @@
       hostMusic.currentTime = 0;
     }
 
+    function canPlayWinnerMusicHere() {
+      // La música de fondo sigue siendo solo del profesor.
+      // La fanfarria, en cambio, debe sonar también al alumno que ha ganado.
+      if (isHost) return true;
+      const winner = getStoredWinner();
+      return Boolean(winner && winner.id === playerId);
+    }
+
     function playWinnerMusic() {
-      // La música de victoria también queda limitada al profesor.
-      if (!isHost) return;
+      if (!canPlayWinnerMusicHere()) return;
 
       winnerMusic.currentTime = 0;
       winnerMusic.play().catch(() => {
