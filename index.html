@@ -4019,9 +4019,8 @@
     }
 
     function playAnswerSound(correct) {
-      // Evitamos cualquier sonido en los dispositivos de los alumnos.
-      if (!isHost) return;
-
+      // Efectos de acierto/error: deben sonar en el dispositivo del alumno que responde.
+      // La música de fondo sigue limitada al profesor en startHostMusic().
       try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         const ctx = new AudioContext();
