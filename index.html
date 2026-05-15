@@ -2060,7 +2060,11 @@
       httpsCallable
     } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
     import {
-      getAuth,
+      initializeAuth,
+      indexedDBLocalPersistence,
+      browserLocalPersistence,
+      inMemoryPersistence,
+      browserPopupRedirectResolver,
       GoogleAuthProvider,
       signInWithPopup,
       signInWithRedirect,
@@ -2080,7 +2084,15 @@
     });
 
     const functions = getFunctions(app, FUNCTIONS_REGION);
-    const auth = getAuth(app);
+
+    // Auth inicializado explícitamente para mejorar compatibilidad en Safari/iOS.
+    // indexedDBLocalPersistence suele ser la opción más estable; si iOS lo bloquea
+    // se prueba localStorage y, como último recurso, memoria de sesión.
+    const auth = initializeAuth(app, {
+      persistence: [indexedDBLocalPersistence, browserLocalPersistence, inMemoryPersistence],
+      popupRedirectResolver: browserPopupRedirectResolver
+    });
+
     const googleProvider = new GoogleAuthProvider();
 
     let roomRef = null;
@@ -2238,9 +2250,14 @@
       updateSidePanelVisibility();
 
       // Necesario si en iOS/Safari el inicio con Google se hace por redirección.
-      getRedirectResult(auth).catch((error) => {
+      // Lo esperamos para que Firebase termine de reconstruir la sesión antes de
+      // decidir si el profesor puede crear sala.
+      try {
+        await getRedirectResult(auth);
+      } catch (error) {
         console.error("Error recuperando login por redirección:", error);
-      });
+        showNotice("roomNotice", getAuthErrorMessage(error));
+      }
 
       onAuthStateChanged(auth, async (user) => {
         currentUser = user;
@@ -2513,24 +2530,52 @@
      * ACCESO DEL PROFESOR
      ************************************************************/
     async function teacherLogin() {
+      const loginBtn = $("teacherLoginBtn");
       try {
-        if (isIOSDevice()) {
-          await signInWithRedirect(auth, googleProvider);
-          return;
-        }
+        loginBtn && (loginBtn.disabled = true);
+        loginBtn && (loginBtn.textContent = "Abriendo Google...");
 
-        await signInWithPopup(auth, googleProvider);
+        // En iOS/Safari, signInWithRedirect puede fallar si el navegador bloquea
+        // almacenamiento de terceros. Probamos primero popup desde el gesto directo
+        // del botón y dejamos redirect como plan B.
+        await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
       } catch (error) {
-        console.error(error);
+        console.error("Error con popup de Google:", error);
 
-        // En algunos Safari/iOS el popup falla o se bloquea. Probamos redirección.
         try {
-          await signInWithRedirect(auth, googleProvider);
+          loginBtn && (loginBtn.textContent = "Redirigiendo a Google...");
+          await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
         } catch (redirectError) {
-          console.error(redirectError);
-          alert("No se ha podido iniciar sesión con Google.");
+          console.error("Error con redirección de Google:", redirectError);
+          alert(getAuthErrorMessage(redirectError));
         }
+      } finally {
+        loginBtn && (loginBtn.disabled = false);
+        loginBtn && (loginBtn.textContent = "Iniciar con Google");
       }
+    }
+
+    function getAuthErrorMessage(error) {
+      const code = String(error?.code || "");
+      const message = String(error?.message || "");
+
+      if (code === "auth/unauthorized-domain") {
+        return "No se puede iniciar sesión: este dominio no está autorizado en Firebase Authentication. Añádelo en Firebase Console > Authentication > Settings > Authorized domains.";
+      }
+
+      if (code === "auth/popup-blocked") {
+        return "Safari ha bloqueado la ventana de Google. Permite ventanas emergentes para esta web o prueba abriendo la app directamente en Safari.";
+      }
+
+      if (code === "auth/popup-closed-by-user") {
+        return "Se ha cerrado la ventana de Google antes de completar el inicio de sesión.";
+      }
+
+      if (message.includes("third-party") || message.includes("storage")) {
+        return "Safari/iOS parece estar bloqueando el inicio de sesión por redirección. Revisa que el dominio de la web esté configurado correctamente como authDomain o usa Firebase Hosting para servir la app.";
+      }
+
+      return `No se ha podido iniciar sesión con Google${code ? ` (${code})` : ""}.`;
     }
 
     async function teacherLogout() {
