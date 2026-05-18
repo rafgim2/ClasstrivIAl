@@ -3703,7 +3703,11 @@
         if (isHost) {
           hideWinnerCelebration();
           hideLoserEncouragement();
-          stopWinnerMusic();
+          if (winner) {
+            playWinnerMusicForHost(winner);
+          } else {
+            stopWinnerMusic();
+          }
         } else if (winner && winner.id === playerId) {
           hideLoserEncouragement();
           showWinnerCelebration(winner);
@@ -4309,13 +4313,16 @@
     }
 
     function canPlayWinnerMusicHere() {
-      // La fanfarria solo debe sonar en el dispositivo del alumno ganador.
+      // En alumnos, la fanfarria solo suena en el dispositivo del ganador.
+      // En el profesor, también debe sonar al terminar la partida.
       const winner = getStoredWinner();
-      return Boolean(!isHost && winner?.id && playerId && winner.id === playerId);
+      if (!winner?.id) return false;
+      if (isHost) return true;
+      return Boolean(playerId && winner.id === playerId);
     }
 
-    function playWinnerMusic() {
-      if (!canPlayWinnerMusicHere()) return;
+    function playWinnerMusic({ force = false } = {}) {
+      if (!force && !canPlayWinnerMusicHere()) return;
 
       winnerMusic.currentTime = 0;
       winnerMusic.play().catch(() => {
@@ -4329,10 +4336,14 @@
     }
 
     function playWinnerMusicForHost(winner) {
-      const key = `${room?.finishedAt?.seconds || "finished"}_${winner?.id || "sin-ganador"}`;
+      if (!isHost || !winner?.id) return;
+
+      // Usamos una clave estable para que la fanfarria del profesor no se reinicie
+      // si Firestore vuelve a renderizar la pantalla de resultados.
+      const key = `${roomCode || "sala"}_${winner.id}_${room?.winnerScore ?? winner.score ?? 0}`;
       if (hostWinnerMusicShownFor === key) return;
       hostWinnerMusicShownFor = key;
-      playWinnerMusic();
+      playWinnerMusic({ force: true });
     }
 
     function showWinnerCelebration(winner) {
